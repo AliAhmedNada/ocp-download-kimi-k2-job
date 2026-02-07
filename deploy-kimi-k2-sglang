@@ -79,7 +79,7 @@ spec:
               mountPath: /models
       containers:
         - name: sglang-server
-          image: registry-kdc.alinma.internal/docker.io/lmsysorg/sglang:latest
+          image: docker.io/lmsysorg/sglang:latest
           imagePullPolicy: Always
           command:
             - python3
