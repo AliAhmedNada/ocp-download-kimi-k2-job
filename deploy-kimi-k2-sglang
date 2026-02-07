@@ -1,0 +1,185 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: kimi-k2-sglang
+  namespace: nim-llm
+  labels:
+    app: kimi-k2-sglang
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kimi-k2-sglang
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        app: kimi-k2-sglang
+    spec:
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 300
+      dnsPolicy: ClusterFirst
+      securityContext:
+        runAsUser: 1000890000
+        runAsGroup: 1000890000
+        fsGroup: 1000890000
+      schedulerName: default-scheduler
+      volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: kimi-k2
+            readOnly: true
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 220Gi
+        - name: cache
+          emptyDir:
+            sizeLimit: 100Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 150Gi
+      initContainers:
+        - name: check-model
+          image: docker.io/lmsysorg/sglang:latest
+          imagePullPolicy: Always
+          command:
+            - /bin/sh
+            - '-c'
+            - |
+              echo "=== Model Directory Check ==="
+              if [ -d "/models/kimi-k2" ]; then
+                echo "✓ Model directory exists: /models/kimi-k2"
+                if [ -f "/models/kimi-k2/config.json" ]; then
+                  echo "✓ config.json found"
+                  cat /models/kimi-k2/config.json | head -20
+                else
+                  echo "⚠ config.json not found"
+                fi
+              else
+                echo "✗ ERROR: Model directory not found"
+                exit 1
+              fi
+          resources:
+            limits:
+              cpu: '2'
+              memory: 2Gi
+            requests:
+              cpu: '1'
+              memory: 1Gi
+          volumeMounts:
+            - name: model-storage
+              readOnly: true
+              mountPath: /models
+      containers:
+        - name: sglang-server
+          image: registry-kdc.alinma.internal/docker.io/lmsysorg/sglang:latest
+          imagePullPolicy: Always
+          command:
+            - python3
+            - '-m'
+            - sglang.launch_server
+          args:
+            - '--model-path=/models/kimi-k2'
+            - '--tp=8'
+            - '--host=0.0.0.0'
+            - '--port=8000'
+            - '--trust-remote-code'
+            - '--context-length=131072'
+            - '--mem-fraction-static=0.80'
+            - '--max-prefill-tokens=32768'
+            - '--chunked-prefill-size=32768'
+            - '--enable-mixed-chunk'
+            - '--disable-custom-all-reduce'
+            - '--cuda-graph-max-bs=16'
+            - '--log-level=info'
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: CUDA_VISIBLE_DEVICES
+              value: '0,1,2,3,4,5,6,7'
+            - name: CUDA_DEVICE_ORDER
+              value: PCI_BUS_ID
+            - name: NCCL_DEBUG
+              value: INFO
+            - name: NCCL_SOCKET_NTHREADS
+              value: '8'
+            - name: NCCL_NSYNC_PERTHREAD
+              value: '2'
+            - name: NCCL_IB_DISABLE
+              value: '0'
+            - name: NCCL_P2P_DISABLE
+              value: '0'
+            - name: NCCL_SHM_DISABLE
+              value: '0'
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: 'expandable_segments:True,max_split_size_mb:512'
+            - name: TORCH_CUDA_ARCH_LIST
+              value: '90'
+            - name: HOME
+              value: /tmp
+            - name: HF_HOME
+              value: /tmp/hf_home
+            - name: HF_HUB_CACHE
+              value: /tmp/hf_cache
+            - name: TORCH_HOME
+              value: /tmp/torch_home
+            - name: TOKENIZERS_PARALLELISM
+              value: 'false'
+          resources:
+            limits:
+              cpu: '96'
+              memory: 800Gi
+              nvidia.com/gpu: '8'
+            requests:
+              cpu: '96'
+              memory: 800Gi
+              nvidia.com/gpu: '8'
+          volumeMounts:
+            - name: model-storage
+              readOnly: true
+              mountPath: /models
+            - name: shm
+              mountPath: /dev/shm
+            - name: cache
+              mountPath: /tmp/hf_cache
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 60
+            timeoutSeconds: 10
+            periodSeconds: 30
+            successThreshold: 1
+            failureThreshold: 120
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 60
+            timeoutSeconds: 30
+            periodSeconds: 60
+            successThreshold: 1
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: HTTP
+            initialDelaySeconds: 30
+            timeoutSeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            failureThreshold: 3
